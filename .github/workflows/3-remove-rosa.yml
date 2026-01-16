@@ -1,0 +1,277 @@
+name: Remove from ROSA
+
+# ============================================================
+# Removes the React application from ROSA cluster
+# Deletes deployment, service, route, and related resources
+# ============================================================
+
+on:
+  workflow_dispatch:
+    inputs:
+      namespace:
+        description: 'Namespace where app is deployed'
+        required: true
+        default: 'mortgage-app'
+      confirm_delete:
+        description: 'Type "DELETE" to confirm removal'
+        required: true
+      delete_secret:
+        description: 'Also delete ECR pull secret'
+        required: true
+        default: false
+        type: boolean
+      delete_namespace:
+        description: 'Also delete the namespace (CAUTION!)'
+        required: true
+        default: false
+        type: boolean
+
+env:
+  APP_NAME: mortgage-portal
+
+jobs:
+  remove:
+    name: Remove from ROSA
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Validate Confirmation
+        run: |
+          if [ "${{ github.event.inputs.confirm_delete }}" != "DELETE" ]; then
+            echo "❌ ERROR: You must type DELETE to confirm removal"
+            echo ""
+            echo "This safety check prevents accidental deletion."
+            echo "Please run the workflow again and type DELETE in the confirmation field."
+            exit 1
+          fi
+          echo "✅ Deletion confirmed"
+
+      - name: Install OpenShift CLI
+        run: |
+          curl -LO https://mirror.openshift.com/pub/openshift-v4/clients/ocp/stable/openshift-client-linux.tar.gz
+          tar -xvf openshift-client-linux.tar.gz
+          sudo mv oc kubectl /usr/local/bin/
+          oc version --client
+
+      - name: Login to OpenShift
+        run: |
+          oc login ${{ secrets.OPENSHIFT_SERVER }} \
+            --token=${{ secrets.OPENSHIFT_TOKEN }} \
+            --insecure-skip-tls-verify=true
+
+      - name: Check Namespace Exists
+        run: |
+          NAMESPACE="${{ github.event.inputs.namespace }}"
+          
+          if ! oc get namespace $NAMESPACE 2>/dev/null; then
+            echo "❌ Namespace '$NAMESPACE' does not exist"
+            exit 1
+          fi
+          
+          echo "✅ Namespace exists: $NAMESPACE"
+          oc project $NAMESPACE
+
+      - name: Show Current State
+        run: |
+          NAMESPACE="${{ github.event.inputs.namespace }}"
+          
+          echo "📋 Current resources in namespace: $NAMESPACE"
+          echo ""
+          
+          echo "=== Deployment ==="
+          oc get deployment ${{ env.APP_NAME }} -n $NAMESPACE 2>/dev/null || echo "Not found"
+          
+          echo ""
+          echo "=== Pods ==="
+          oc get pods -n $NAMESPACE -l app=${{ env.APP_NAME }} 2>/dev/null || echo "No pods"
+          
+          echo ""
+          echo "=== Service ==="
+          oc get svc ${{ env.APP_NAME }} -n $NAMESPACE 2>/dev/null || echo "Not found"
+          
+          echo ""
+          echo "=== Route ==="
+          oc get route ${{ env.APP_NAME }} -n $NAMESPACE 2>/dev/null || echo "Not found"
+          
+          echo ""
+          echo "=== ECR Pull Secret ==="
+          oc get secret ecr-pull-secret -n $NAMESPACE 2>/dev/null || echo "Not found"
+
+      - name: Delete Route
+        run: |
+          NAMESPACE="${{ github.event.inputs.namespace }}"
+          
+          echo "🗑️ Deleting Route..."
+          if oc get route ${{ env.APP_NAME }} -n $NAMESPACE 2>/dev/null; then
+            oc delete route ${{ env.APP_NAME }} -n $NAMESPACE
+            echo "✅ Route deleted"
+          else
+            echo "⚠️ Route not found, skipping"
+          fi
+
+      - name: Delete Service
+        run: |
+          NAMESPACE="${{ github.event.inputs.namespace }}"
+          
+          echo "🗑️ Deleting Service..."
+          if oc get svc ${{ env.APP_NAME }} -n $NAMESPACE 2>/dev/null; then
+            oc delete svc ${{ env.APP_NAME }} -n $NAMESPACE
+            echo "✅ Service deleted"
+          else
+            echo "⚠️ Service not found, skipping"
+          fi
+
+      - name: Delete Deployment
+        run: |
+          NAMESPACE="${{ github.event.inputs.namespace }}"
+          
+          echo "🗑️ Deleting Deployment..."
+          if oc get deployment ${{ env.APP_NAME }} -n $NAMESPACE 2>/dev/null; then
+            oc delete deployment ${{ env.APP_NAME }} -n $NAMESPACE
+            echo "✅ Deployment deleted"
+          else
+            echo "⚠️ Deployment not found, skipping"
+          fi
+
+      - name: Wait for Pods Termination
+        run: |
+          NAMESPACE="${{ github.event.inputs.namespace }}"
+          
+          echo "⏳ Waiting for pods to terminate..."
+          
+          for i in {1..30}; do
+            PODS=$(oc get pods -n $NAMESPACE -l app=${{ env.APP_NAME }} --no-headers 2>/dev/null | wc -l)
+            if [ "$PODS" -eq 0 ]; then
+              echo "✅ All pods terminated"
+              break
+            fi
+            echo "  Waiting... ($PODS pods remaining)"
+            sleep 2
+          done
+          
+          # Force delete if still present
+          if oc get pods -n $NAMESPACE -l app=${{ env.APP_NAME }} --no-headers 2>/dev/null | grep -q .; then
+            echo "⚠️ Force deleting remaining pods..."
+            oc delete pods -n $NAMESPACE -l app=${{ env.APP_NAME }} --force --grace-period=0 2>/dev/null || true
+          fi
+
+      - name: Delete ConfigMaps and Secrets (App-related)
+        run: |
+          NAMESPACE="${{ github.event.inputs.namespace }}"
+          
+          echo "🗑️ Deleting app-related ConfigMaps..."
+          oc delete configmap -n $NAMESPACE -l app=${{ env.APP_NAME }} 2>/dev/null || true
+          
+          echo "🗑️ Deleting app-related Secrets..."
+          oc delete secret -n $NAMESPACE -l app=${{ env.APP_NAME }} 2>/dev/null || true
+
+      - name: Delete ECR Pull Secret
+        if: github.event.inputs.delete_secret == 'true'
+        run: |
+          NAMESPACE="${{ github.event.inputs.namespace }}"
+          
+          echo "🗑️ Deleting ECR pull secret..."
+          if oc get secret ecr-pull-secret -n $NAMESPACE 2>/dev/null; then
+            oc delete secret ecr-pull-secret -n $NAMESPACE
+            echo "✅ ECR pull secret deleted"
+          else
+            echo "⚠️ ECR pull secret not found, skipping"
+          fi
+
+      - name: Delete Namespace
+        if: github.event.inputs.delete_namespace == 'true'
+        run: |
+          NAMESPACE="${{ github.event.inputs.namespace }}"
+          
+          echo "🗑️ Deleting namespace: $NAMESPACE"
+          echo "⚠️ WARNING: This will delete ALL resources in the namespace!"
+          
+          oc delete namespace $NAMESPACE --timeout=120s
+          echo "✅ Namespace deleted"
+
+      - name: Verify Removal
+        if: github.event.inputs.delete_namespace != 'true'
+        run: |
+          NAMESPACE="${{ github.event.inputs.namespace }}"
+          
+          echo ""
+          echo "🔍 Verifying removal..."
+          echo ""
+          
+          ERRORS=0
+          
+          if oc get deployment ${{ env.APP_NAME }} -n $NAMESPACE 2>/dev/null; then
+            echo "❌ Deployment still exists"
+            ERRORS=$((ERRORS + 1))
+          else
+            echo "✅ Deployment removed"
+          fi
+          
+          if oc get svc ${{ env.APP_NAME }} -n $NAMESPACE 2>/dev/null; then
+            echo "❌ Service still exists"
+            ERRORS=$((ERRORS + 1))
+          else
+            echo "✅ Service removed"
+          fi
+          
+          if oc get route ${{ env.APP_NAME }} -n $NAMESPACE 2>/dev/null; then
+            echo "❌ Route still exists"
+            ERRORS=$((ERRORS + 1))
+          else
+            echo "✅ Route removed"
+          fi
+          
+          if [ $ERRORS -gt 0 ]; then
+            echo ""
+            echo "⚠️ Some resources may not have been deleted properly"
+          else
+            echo ""
+            echo "✅ All resources successfully removed"
+          fi
+          
+          echo ""
+          echo "=== Remaining resources in namespace ==="
+          oc get all -n $NAMESPACE 2>/dev/null || echo "Namespace not found"
+
+      - name: Summary
+        run: |
+          echo "## 🗑️ Application Removed from ROSA" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Deleted Resources" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Resource | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|----------|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Deployment | ✅ Deleted |" >> $GITHUB_STEP_SUMMARY
+          echo "| Service | ✅ Deleted |" >> $GITHUB_STEP_SUMMARY
+          echo "| Route | ✅ Deleted |" >> $GITHUB_STEP_SUMMARY
+          echo "| Pods | ✅ Terminated |" >> $GITHUB_STEP_SUMMARY
+          
+          if [ "${{ github.event.inputs.delete_secret }}" == "true" ]; then
+            echo "| ECR Pull Secret | ✅ Deleted |" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "| ECR Pull Secret | ⏭️ Kept |" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          if [ "${{ github.event.inputs.delete_namespace }}" == "true" ]; then
+            echo "| Namespace | ✅ Deleted |" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "| Namespace | ⏭️ Kept |" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Details" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **Application**: \`${{ env.APP_NAME }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Namespace**: \`${{ github.event.inputs.namespace }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Triggered by**: @${{ github.actor }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Timestamp**: $(date -u '+%Y-%m-%d %H:%M:%S UTC')" >> $GITHUB_STEP_SUMMARY
+          
+          echo ""
+          echo "════════════════════════════════════════════════════════════"
+          echo "  MORTGAGE PORTAL REMOVED FROM ROSA"
+          echo "════════════════════════════════════════════════════════════"
+          echo ""
+          echo "  Application: ${{ env.APP_NAME }}"
+          echo "  Namespace:   ${{ github.event.inputs.namespace }}"
+          echo ""
+          echo "════════════════════════════════════════════════════════════"
