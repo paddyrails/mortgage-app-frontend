@@ -12,10 +12,9 @@ import type {
 } from "../types";
 
 const API_BASE = {
-  CUSTOMERS: import.meta.env.VITE_CUSTOMER_SERVICE_URL + "/api/customers",
-  PROPERTIES: import.meta.env.VITE_PROPERTY_SERVICE_URL + "/api/properties",
-  APPLICATIONS:
-    import.meta.env.VITE_APPLICATION_SERVICE_URL + "/api/applications",
+  CUSTOMERS: "/api/customers", // ✅ Relative path
+  PROPERTIES: "/api/properties", // ✅ Relative path
+  APPLICATIONS: "/api/applications", // ✅ Relative path
 };
 
 // Customer Service
