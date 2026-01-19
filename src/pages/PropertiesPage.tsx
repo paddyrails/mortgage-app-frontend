@@ -306,10 +306,9 @@ export const PropertiesPage: React.FC = () => {
       header: "Status",
       sortable: true,
       render: (p) => (
-        <Badge variant={getStatusVariant(p.status)}>
-          {p.status.replace(/([A-Z])/g, " $1").trim()}
-        </Badge>
+        <Badge variant={getStatusVariant(p.status)}>{p.status}</Badge>
       ),
+      // .replace(/([A-Z])/g, " $1").trim()}
     },
   ];
 
